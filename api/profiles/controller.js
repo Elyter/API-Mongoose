@@ -14,7 +14,8 @@ exports.getAllProfiles = async (req, res) => {
       query['information.location'] = { $regex: location, $options: 'i' };
     }
     
-    const profiles = await Profile.find(query);
+    // Optimisation: utilisation de lean() pour des performances améliorées quand on n'a pas besoin d'instances complètes
+    const profiles = await Profile.find(query).lean();
     res.json(profiles);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -40,11 +41,14 @@ exports.getProfileById = async (req, res) => {
 // Créer un nouveau profil
 exports.createProfile = async (req, res) => {
   try {
-    const { name, email } = req.body;
+    const { name, email, skills = [], information = {} } = req.body;
     
+    // Optimisation: initialisation avec toutes les propriétés disponibles
     const newProfile = new Profile({
       name,
-      email
+      email,
+      skills,
+      information
     });
     
     const savedProfile = await newProfile.save();
@@ -57,11 +61,18 @@ exports.createProfile = async (req, res) => {
 // Mettre à jour un profil
 exports.updateProfile = async (req, res) => {
   try {
-    const { name, email } = req.body;
+    const updatedFields = {};
+    
+    // Optimisation: ne mise à jour que les champs fournis
+    Object.keys(req.body).forEach(key => {
+      if (key !== 'isDeleted' && key !== '_id') { // Sécurité pour éviter les modifications interdites
+        updatedFields[key] = req.body[key];
+      }
+    });
     
     const updatedProfile = await Profile.findOneAndUpdate(
       { _id: req.params.id, isDeleted: false },
-      { name, email },
+      { $set: updatedFields },
       { new: true }
     );
     
@@ -94,29 +105,22 @@ exports.deleteProfile = async (req, res) => {
   }
 };
 
-// Ajouter une expérience
+// Ajouter une expérience - Corrigé le mélange d'async/await et then/catch
 exports.addExperience = async (req, res) => {
   try {
     const { title, company, dates, description } = req.body;
-    
-    Profile.findOneAndUpdate(
+
+    const updatedProfile = await Profile.findOneAndUpdate(
       { _id: req.params.id, isDeleted: false },
       { $push: { experience: { title, company, dates, description } } },
       { new: true }
-    )
-      .then(updatedProfile => {
-        if (!updatedProfile) {
-          return res.status(404).json({ message: 'Profile not found' });
-        }
-        res.json(updatedProfile);
-      })
-      .catch(error => {
-        res.status(400).json({ error: error.message });
-      });
-
-    await profile.save();
+    );
     
-    res.json(profile);
+    if (!updatedProfile) {
+      return res.status(404).json({ message: 'Profile not found' });
+    }
+    
+    res.json(updatedProfile);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -125,18 +129,18 @@ exports.addExperience = async (req, res) => {
 // Supprimer une expérience
 exports.deleteExperience = async (req, res) => {
   try {
-    const profile = await Profile.findOne({ _id: req.params.id, isDeleted: false });
+    // Optimisation: mise à jour directe sans récupérer d'abord
+    const updatedProfile = await Profile.findOneAndUpdate(
+      { _id: req.params.id, isDeleted: false },
+      { $pull: { experience: { _id: req.params.exp } } },
+      { new: true }
+    );
     
-    if (!profile) {
+    if (!updatedProfile) {
       return res.status(404).json({ message: 'Profile not found' });
     }
     
-    profile.experience = profile.experience.filter(
-      exp => exp._id.toString() !== req.params.exp
-    );
-    
-    await profile.save();
-    res.json(profile);
+    res.json(updatedProfile);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -147,18 +151,18 @@ exports.addSkill = async (req, res) => {
   try {
     const { skill } = req.body;
     
-    const profile = await Profile.findOne({ _id: req.params.id, isDeleted: false });
+    // Optimisation: utilisation de l'opérateur $addToSet qui évite les duplications
+    const updatedProfile = await Profile.findOneAndUpdate(
+      { _id: req.params.id, isDeleted: false },
+      { $addToSet: { skills: skill } },
+      { new: true }
+    );
     
-    if (!profile) {
+    if (!updatedProfile) {
       return res.status(404).json({ message: 'Profile not found' });
     }
     
-    if (!profile.skills.includes(skill)) {
-      profile.skills.push(skill);
-      await profile.save();
-    }
-    
-    res.json(profile);
+    res.json(updatedProfile);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -169,16 +173,18 @@ exports.deleteSkill = async (req, res) => {
   try {
     const skill = req.params.skill;
     
-    const profile = await Profile.findOne({ _id: req.params.id, isDeleted: false });
+    // Optimisation: utilisation de l'opérateur $pull pour une mise à jour directe
+    const updatedProfile = await Profile.findOneAndUpdate(
+      { _id: req.params.id, isDeleted: false },
+      { $pull: { skills: skill } },
+      { new: true }
+    );
     
-    if (!profile) {
+    if (!updatedProfile) {
       return res.status(404).json({ message: 'Profile not found' });
     }
     
-    profile.skills = profile.skills.filter(s => s !== skill);
-    await profile.save();
-    
-    res.json(profile);
+    res.json(updatedProfile);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -187,21 +193,19 @@ exports.deleteSkill = async (req, res) => {
 // Mettre à jour les informations
 exports.updateInformation = async (req, res) => {
   try {
-    const { bio, location, website } = req.body;
+    const updatedInfo = { ...req.body };
     
-    const profile = await Profile.findOneAndUpdate(
+    const updatedProfile = await Profile.findOneAndUpdate(
       { _id: req.params.id, isDeleted: false },
-      { 
-        information: { bio, location, website } 
-      },
+      { $set: { information: updatedInfo } },
       { new: true }
     );
     
-    if (!profile) {
+    if (!updatedProfile) {
       return res.status(404).json({ message: 'Profile not found' });
     }
     
-    res.json(profile);
+    res.json(updatedProfile);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -212,19 +216,24 @@ exports.addFriend = async (req, res) => {
   try {
     const { friendId } = req.body;
     
-    const profile = await Profile.findOne({ _id: req.params.id, isDeleted: false });
-    const friend = await Profile.findOne({ _id: friendId, isDeleted: false });
+    // Vérification en une seule requête
+    const [profile, friend] = await Promise.all([
+      Profile.findOne({ _id: req.params.id, isDeleted: false }),
+      Profile.findOne({ _id: friendId, isDeleted: false })
+    ]);
     
     if (!profile || !friend) {
       return res.status(404).json({ message: 'Profile not found' });
     }
     
-    if (!profile.friends.includes(friendId)) {
-      profile.friends.push(friendId);
-      await profile.save();
-    }
+    // Optimisation: utilisation de $addToSet
+    const updatedProfile = await Profile.findByIdAndUpdate(
+      req.params.id,
+      { $addToSet: { friends: friendId } },
+      { new: true }
+    );
     
-    res.json(profile);
+    res.json(updatedProfile);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -235,16 +244,18 @@ exports.deleteFriend = async (req, res) => {
   try {
     const friendId = req.params.friendId;
     
-    const profile = await Profile.findOne({ _id: req.params.id, isDeleted: false });
+    // Optimisation: utilisation de $pull
+    const updatedProfile = await Profile.findOneAndUpdate(
+      { _id: req.params.id, isDeleted: false },
+      { $pull: { friends: friendId } },
+      { new: true }
+    );
     
-    if (!profile) {
+    if (!updatedProfile) {
       return res.status(404).json({ message: 'Profile not found' });
     }
     
-    profile.friends = profile.friends.filter(id => id.toString() !== friendId);
-    await profile.save();
-    
-    res.json(profile);
+    res.json(updatedProfile);
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -254,6 +265,7 @@ exports.deleteFriend = async (req, res) => {
 exports.getFriends = async (req, res) => {
   try {
     const profile = await Profile.findOne({ _id: req.params.id, isDeleted: false })
+      .select('friends')
       .populate('friends', 'name email _id');
     
     if (!profile) {
